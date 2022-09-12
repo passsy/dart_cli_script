@@ -331,7 +331,6 @@ class Script {
     _checkCapture();
     var controller = StreamController<List<int>>();
     var exitCodeCompleter = Completer<int>.sync();
-    var exitCode = 0;
 
     return Script.fromComponents(
         name ?? transformer.toString(),
@@ -339,7 +338,7 @@ class Script {
             controller.sink,
             controller.stream
                 .transform(transformer)
-                .onDone(() => exitCodeCompleter.complete(exitCode)),
+                .onDone(() => exitCodeCompleter.complete(0)),
             Stream.empty(),
             exitCodeCompleter.future,
             ([ProcessSignal? _]) => !exitCodeCompleter.isCompleted));
@@ -408,24 +407,26 @@ class Script {
     return Script.fromComponents(
         name ?? list.map((script) => script.name).join(" | "),
         () async => ScriptComponents(
-            list.first.stdin,
-            // Wrap the final script's stdout and stderr in [SubscriptionStream]s so
-            // that the inner scripts will see that someone's listening and not try
-            // to top-level the streams' output.
-            SubscriptionStream(list.last.stdout.listen(null)),
-            SubscriptionStream(list.last.stderr.listen(null)),
-            Future.wait(list.map((script) => script.exitCode)).then(
-                (exitCodes) =>
-                    exitCodes.lastWhere((code) => code != 0, orElse: () => 0)),
-            await Future.wait(list.map((script) => script._signalHandler))
-                .then((signalHandlers) => ([ProcessSignal? s]) async {
-                      for (var handler in signalHandlers) {
-                        var signalAck =
-                            s != null ? await handler(s) : await handler();
-                        if (signalAck) return true;
-                      }
-                      return false;
-                    })));
+              list.first.stdin,
+              // Wrap the final script's stdout and stderr in [SubscriptionStream]s so
+              // that the inner scripts will see that someone's listening and not try
+              // to top-level the streams' output.
+              SubscriptionStream(list.last.stdout.listen(null)),
+              SubscriptionStream(list.last.stderr.listen(null)),
+              Future.wait(list.map((script) => script.exitCode)).then(
+                  (exitCodes) => exitCodes.lastWhere((code) => code != 0,
+                      orElse: () => 0)),
+              ([ProcessSignal? signal]) async {
+                var signalHandlers = await Future.wait(
+                    list.map((script) => script._signalHandler));
+                for (var handler in signalHandlers) {
+                  var signalAck =
+                      signal != null ? await handler(signal) : await handler();
+                  if (signalAck) return true;
+                }
+                return false;
+              },
+            ));
   }
 
   /// Converts [scriptlike] into a [Script], or throws an [ArgumentError] if it

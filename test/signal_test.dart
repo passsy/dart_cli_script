@@ -29,13 +29,10 @@ void main() {
   });
 
   test("can't interrupt a program that has already exited", () async {
-    var script =
-        mainScript('await Future<void>.delayed(Duration(seconds: 1));');
+    var script = mainScript('print("done!");');
 
-    await Future<void>.delayed(Duration(seconds: 2));
+    expect(await script.output, 'done!');
     expect(await script.signal(), false);
-
-    expect(script.done, completes);
   });
 
   test("doesn't interrupt program that traps signals", () async {
@@ -45,15 +42,13 @@ void main() {
     await Future<void>.delayed(Duration(seconds: 1));
     expect(await script.signal(), true);
 
-    await Future<void>.delayed(Duration(seconds: 3));
-    expect(await script.signal(), false);
-
     expect(await output, 'SIGTERM\nbye!');
+    expect(await script.signal(), false);
   });
 
   test("can't interrupt Script.capture", () async {
     var script = Script.capture((_) async {
-      await Future<void>.delayed(Duration(seconds: 2));
+      await Future<void>.delayed(Duration(seconds: 3));
       print('done!');
     });
     var output = script.output;
@@ -61,10 +56,8 @@ void main() {
     await Future<void>.delayed(Duration(seconds: 1));
     expect(await script.signal(), true);
 
-    await Future<void>.delayed(Duration(seconds: 3));
-    expect(await script.signal(), false);
-
     expect(await output, 'done!');
+    expect(await script.signal(), false);
   });
 
   test("doesn't forward signal via Script.capture", () async {
@@ -74,7 +67,7 @@ void main() {
     await Future<void>.delayed(Duration(seconds: 1));
     expect(await script.signal(), true);
 
-    await Future<void>.delayed(Duration(seconds: 3));
+    await Future<void>.delayed(Duration(seconds: 6));
     expect(await script.signal(), false);
 
     expect(await output, 'bye!');
@@ -82,7 +75,7 @@ void main() {
 
   test("can't interrupt BufferedScript.capture", () async {
     var script = BufferedScript.capture((_) async {
-      await Future<void>.delayed(Duration(seconds: 2));
+      await Future<void>.delayed(Duration(seconds: 3));
       print('done!');
     });
     var done = false;
@@ -94,7 +87,7 @@ void main() {
     await Future<void>.delayed(Duration(seconds: 1));
     expect(await script.signal(), true);
 
-    await Future<void>.delayed(Duration(seconds: 3));
+    await Future<void>.delayed(Duration(seconds: 5));
     expect(await script.signal(), false);
 
     expect(done, false);
@@ -115,7 +108,7 @@ void main() {
     await Future<void>.delayed(Duration(seconds: 1));
     expect(await script.signal(), true);
 
-    await Future<void>.delayed(Duration(seconds: 3));
+    await Future<void>.delayed(Duration(seconds: 6));
     expect(await script.signal(), false);
 
     expect(done, false);
@@ -144,7 +137,7 @@ void main() {
         if (line == null) break;
         print('from a: $line');
       }
-      await Future<void>.delayed(Duration(seconds: 2));
+      await Future<void>.delayed(Duration(seconds: 6));
       print('b: bye!');
       await signalStream.cancel();
     ''');
@@ -153,7 +146,7 @@ void main() {
     await Future<void>.delayed(Duration(seconds: 1));
     expect(await pipeline.signal(), true);
 
-    await Future<void>.delayed(Duration(seconds: 3));
+    await Future<void>.delayed(Duration(seconds: 6));
     expect(await pipeline.signal(), true);
 
     expect(
@@ -165,14 +158,14 @@ void main() {
           'b: bye!',
         ]));
 
-    await Future<void>.delayed(Duration(seconds: 3));
+    await pipeline.done;
     expect(await pipeline.signal(), false);
   });
 }
 
 Script _watchSignalsAndExit() => mainScript(r'''
   var signalStream = ProcessSignal.sigterm.watch().listen(print);
-  await Future<void>.delayed(Duration(seconds: 2));
+  await Future<void>.delayed(Duration(seconds: 3));
   await signalStream.cancel();
   print('bye!');
 ''');

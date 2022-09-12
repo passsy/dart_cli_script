@@ -153,6 +153,21 @@ class Script {
   /// script exits.
   final _outputCloser = StreamCloser<List<int>>();
 
+  /// The script's signal handler to terminate the process.
+  late final Future<FutureOr<bool> Function([ProcessSignal])> _signalHandler;
+
+  /// Sends a [ProcessSignal] to terminate the process.
+  ///
+  /// Defaults to [ProcessSignal.sigterm].
+  ///
+  /// On platforms without signal support, including Windows, the call ignores
+  /// [signal] and the process terminates in a platform specific way.
+  ///
+  /// Returns whether the signal was successfully delivered. Otherwise it
+  /// usually means the process is already dead.
+  FutureOr<bool> signal([ProcessSignal signal = ProcessSignal.sigterm]) async =>
+      (await _signalHandler)(signal);
+
   /// Creates a [Script] that runs a subprocess.
   ///
   /// The [executableAndArgs] and [args] arguments are parsed as described in
@@ -199,8 +214,8 @@ class Script {
           includeParentEnvironment: false,
           runInShell: runInShell);
 
-      return ScriptComponents(
-          process.stdin, process.stdout, process.stderr, process.exitCode);
+      return ScriptComponents(process.stdin, process.stdout, process.stderr,
+          process.exitCode, process.kill);
     }, silenceStartMessage: true);
   }
 
@@ -238,6 +253,10 @@ class Script {
   ///
   /// The [name] is a human-readable name for the script, used for debugging and
   /// error messages. It defaults to `"capture"`.
+  ///
+  /// The script can only be interrupted by closing the [Script.stdin] stream.
+  /// Any [signal] is ignored and returns whether or not the script is sill
+  /// running.
   factory Script.capture(
       FutureOr<void> Function(Stream<List<int>> stdin) callback,
       {String? name}) {
@@ -287,8 +306,14 @@ class Script {
           if (!exitCodeCompleter.isCompleted) stdoutGroup.writeln(line);
         }));
 
-    return Script._(scriptName, stdinController.sink, stdoutGroup.stream,
-        stderrGroup.stream, exitCodeCompleter.future);
+    return Script.fromComponents(
+        scriptName,
+        () => ScriptComponents(
+            stdinController.sink,
+            stdoutGroup.stream,
+            stderrGroup.stream,
+            exitCodeCompleter.future,
+            ([ProcessSignal? _]) => !exitCodeCompleter.isCompleted));
   }
 
   /// Creates a [Script] from a [StreamTransformer] on byte streams.
@@ -296,20 +321,28 @@ class Script {
   /// This script transforms all its stdin with [transformer] and emits it via
   /// stdout. It exits once the transformed stream closes. Any error events
   /// emitted by [transformer] are treated as errors in the script.
+  ///
+  /// The script can only be interrupted by closing the [Script.stdin] stream.
+  /// Any [signal] is ignored and returns whether or not the script is sill
+  /// running.
   factory Script.fromByteTransformer(
       StreamTransformer<List<int>, List<int>> transformer,
       {String? name}) {
     _checkCapture();
     var controller = StreamController<List<int>>();
     var exitCodeCompleter = Completer<int>.sync();
-    return Script._(
+    var exitCode = 0;
+
+    return Script.fromComponents(
         name ?? transformer.toString(),
-        controller.sink,
-        controller.stream
-            .transform(transformer)
-            .onDone(() => exitCodeCompleter.complete(0)),
-        Stream.empty(),
-        exitCodeCompleter.future);
+        () => ScriptComponents(
+            controller.sink,
+            controller.stream
+                .transform(transformer)
+                .onDone(() => exitCodeCompleter.complete(exitCode)),
+            Stream.empty(),
+            exitCodeCompleter.future,
+            ([ProcessSignal? _]) => !exitCodeCompleter.isCompleted));
   }
 
   /// Creates a [Script] from a [StreamTransformer] on string streams.
@@ -350,6 +383,9 @@ class Script {
   /// will only exit once *all* component scripts have exited. If multiple
   /// scripts exit with errors, the last non-zero exit code will be returned.
   ///
+  /// Similarly, the [signal] handler will send the event to the first script
+  /// that accepts the signal.
+  ///
   /// This doesn't add any special handling for any script's [stderr] except for
   /// the last one.
   ///
@@ -369,16 +405,27 @@ class Script {
       list[i].stdout.pipe(list[i + 1].stdin);
     }
 
-    return Script._(
+    return Script.fromComponents(
         name ?? list.map((script) => script.name).join(" | "),
-        list.first.stdin,
-        // Wrap the final script's stdout and stderr in [SubscriptionStream]s so
-        // that the inner scripts will see that someone's listening and not try
-        // to top-level the streams' output.
-        SubscriptionStream(list.last.stdout.listen(null)),
-        SubscriptionStream(list.last.stderr.listen(null)),
-        Future.wait(list.map((script) => script.exitCode)).then((exitCodes) =>
-            exitCodes.lastWhere((code) => code != 0, orElse: () => 0)));
+        () async => ScriptComponents(
+            list.first.stdin,
+            // Wrap the final script's stdout and stderr in [SubscriptionStream]s so
+            // that the inner scripts will see that someone's listening and not try
+            // to top-level the streams' output.
+            SubscriptionStream(list.last.stdout.listen(null)),
+            SubscriptionStream(list.last.stderr.listen(null)),
+            Future.wait(list.map((script) => script.exitCode)).then(
+                (exitCodes) =>
+                    exitCodes.lastWhere((code) => code != 0, orElse: () => 0)),
+            await Future.wait(list.map((script) => script._signalHandler))
+                .then((signalHandlers) => ([ProcessSignal? s]) async {
+                      for (var handler in signalHandlers) {
+                        var signalAck =
+                            s != null ? await handler(s) : await handler();
+                        if (signalAck) return true;
+                      }
+                      return false;
+                    })));
   }
 
   /// Converts [scriptlike] into a [Script], or throws an [ArgumentError] if it
@@ -413,8 +460,9 @@ class Script {
   ///
   /// This constructor should generally be avoided outside library code. Script
   /// authors are expected to primarily use [Script] and [Script.capture].
-  Script.fromComponents(String name, FutureOr<ScriptComponents> callback())
-      : this.fromComponentsInternal(name, callback, silenceStartMessage: false);
+  factory Script.fromComponents(
+          String name, FutureOr<ScriptComponents> callback()) =>
+      Script.fromComponentsInternal(name, callback, silenceStartMessage: false);
 
   /// Like [Script.fromComponents], but with an internal [silenceStartMessage]
   /// option that's forwarded to [Script._].
@@ -459,7 +507,7 @@ class Script {
               stdinCompleter.setDestinationSink(components.stdin);
               stdoutCompleter.setSourceStream(components.stdout);
               stderrCompleter.setSourceStream(components.stderr);
-              return components.exitCode;
+              return components;
             }),
             silenceStartMessage: silenceStartMessage);
 
@@ -480,9 +528,10 @@ class Script {
   /// If [silenceStartMessage] is `false` (the default), this prints a message
   /// in debug mode indicating that the script has started running.
   Script._(this.name, StreamConsumer<List<int>> stdin, Stream<List<int>> stdout,
-      Stream<List<int>> stderr, Future<int> exitCode,
+      Stream<List<int>> stderr, Future<ScriptComponents> components,
       {bool silenceStartMessage = false})
-      : stdin = IOSink(stdin) {
+      : _signalHandler = components.then((c) => c.signalHandler),
+        stdin = IOSink(stdin) {
     if (!silenceStartMessage) debug("[$name] starting");
 
     _stdout = stdout.handleError(_handleError).transform(_outputCloser);
@@ -495,7 +544,7 @@ class Script {
     // *even if* [_doneWithoutError] has its own listener.
     done = _doneCompleter.future.then((_) {});
 
-    exitCode.then((code) {
+    components.then((c) => c.exitCode).then((code) {
       if (_doneCompleter.isCompleted) return;
 
       if (code == 0) {
@@ -670,5 +719,11 @@ class ScriptComponents {
   /// The script's exit code, to complete once it exits.
   final Future<int> exitCode;
 
-  ScriptComponents(this.stdin, this.stdout, this.stderr, this.exitCode);
+  /// The script's [signal] handler to terminate the process.
+  ///
+  /// Defaults to [ProcessSignal.sigterm].
+  final FutureOr<bool> Function([ProcessSignal signal]) signalHandler;
+
+  ScriptComponents(
+      this.stdin, this.stdout, this.stderr, this.exitCode, this.signalHandler);
 }

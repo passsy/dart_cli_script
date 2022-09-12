@@ -1,3 +1,8 @@
+## 0.3.0
+
+* Add `script.signal()` to send a `ProcessSignal` such as `SIGKILL` or `SIGTERM`
+  to the script. Defaults to `SIGINT`.
+
 ## 0.2.6
 
 * Add a `stderrOnly` parameter to `BufferedScript.capture()` and

@@ -117,7 +117,8 @@ class BufferedScript extends Script {
                 script.stdin,
                 _stdoutBuffer == null ? script.stdout : Stream.empty(),
                 Stream.empty(),
-                script.exitCode),
+                script.exitCode,
+                script.signal),
             silenceStartMessage: true) {
     var stdoutBuffer = _stdoutBuffer;
     if (stdoutBuffer != null) script.stdout.pipe(stdoutBuffer);

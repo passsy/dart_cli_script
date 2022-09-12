@@ -14,6 +14,7 @@
 
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:async/async.dart';
 import 'package:charcode/charcode.dart';
@@ -60,6 +61,9 @@ extension ByteStreamExtensions on Stream<List<int>> {
   /// error, it's treated the same as an unhandled Dart error in a
   /// [Script.capture] block: it's printed to stderr and the virtual stream
   /// process exits with error code 257.
+  ///
+  /// The script can only be interrupted by closing [this] stream. Any [signal]
+  /// is ignored and returns whether or not the script is sill running.
   Script get _asScript {
     return Script.fromComponents("stream", () {
       var exitCodeCompleter = Completer<int>.sync();
@@ -67,7 +71,8 @@ extension ByteStreamExtensions on Stream<List<int>> {
           NullStreamSink(),
           onDone(() => exitCodeCompleter.complete(0)),
           Stream.empty(),
-          exitCodeCompleter.future);
+          exitCodeCompleter.future,
+          ([ProcessSignal? _]) => !exitCodeCompleter.isCompleted);
     });
   }
 

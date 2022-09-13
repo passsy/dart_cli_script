@@ -461,9 +461,8 @@ class Script {
   ///
   /// This constructor should generally be avoided outside library code. Script
   /// authors are expected to primarily use [Script] and [Script.capture].
-  factory Script.fromComponents(
-          String name, FutureOr<ScriptComponents> callback()) =>
-      Script.fromComponentsInternal(name, callback, silenceStartMessage: false);
+  Script.fromComponents(String name, FutureOr<ScriptComponents> callback())
+      : this.fromComponentsInternal(name, callback, silenceStartMessage: false);
 
   /// Like [Script.fromComponents], but with an internal [silenceStartMessage]
   /// option that's forwarded to [Script._].
@@ -531,7 +530,9 @@ class Script {
   Script._(this.name, StreamConsumer<List<int>> stdin, Stream<List<int>> stdout,
       Stream<List<int>> stderr, Future<ScriptComponents> components,
       {bool silenceStartMessage = false})
-      : _signalHandler = components.then((c) => c.signalHandler),
+      : _signalHandler = components
+            .then((c) => c.signalHandler)
+            .catchError((_) => ([ProcessSignal? _]) => false),
         stdin = IOSink(stdin) {
     if (!silenceStartMessage) debug("[$name] starting");
 
